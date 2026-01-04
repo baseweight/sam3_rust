@@ -120,6 +120,147 @@ Segmentation scores:
   Object presence probability: 1.0000
 ```
 
+## Prompting System
+
+SAM3 uses a flexible prompting system that allows users to specify what to segment through points, boxes, or combinations.
+
+### How Prompting Works
+
+1. **Vision Encoder** processes the entire image into multi-scale feature embeddings (288x288, 144x144, 72x72)
+2. **Prompt Encoder** converts user prompts (points/boxes) into prompt embeddings
+3. **Mask Decoder** combines image features + prompt embeddings to predict segmentation masks
+
+### Point Prompts
+
+Points are the simplest prompt type - click on an object to segment it.
+
+| Property | Description |
+|----------|-------------|
+| Format | `(x, y)` coordinates in original image space |
+| Label | `1` = foreground (include), `0` = background (exclude) |
+| Tensor | `input_points` [batch, 1, num_points, 2] float32 |
+| Labels Tensor | `input_labels` [batch, 1, num_points] int64 |
+
+**Use cases:**
+- Single click to segment an object
+- Multiple foreground points to ensure full object coverage
+- Background points to exclude regions (e.g., click on background to say "not this")
+
+### Box Prompts
+
+Boxes define a region where the object is located.
+
+| Property | Description |
+|----------|-------------|
+| Format | `(x1, y1, x2, y2)` - top-left and bottom-right corners |
+| Tensor | `input_boxes` [batch, num_boxes, 4] float32 |
+
+**Use cases:**
+- When object boundaries are roughly known
+- Combined with points for more precise segmentation
+- Multiple boxes for multi-object segmentation
+
+### Multi-Mask Output
+
+SAM3 outputs 3 masks for each prompt to handle ambiguity:
+
+| Mask Index | Description | Example |
+|------------|-------------|---------|
+| 0 | Smallest/most specific | Just a person's hand |
+| 1 | Medium granularity | The whole person |
+| 2 | Largest/most inclusive | Person + their shadow |
+
+Each mask includes an **IoU score** (0-1) indicating model confidence. Higher IoU = more confident.
+
+### Coordinate System
+
+- Origin `(0, 0)` is **top-left** of the image
+- X increases rightward, Y increases downward
+- Coordinates are in **original image space** (automatically scaled to model's 1008x1008 internally)
+
+### Prompt Combinations
+
+| Combination | Quality | Use Case |
+|-------------|---------|----------|
+| Single point | Good | Quick selection |
+| Multiple points | Better | Complex objects |
+| Box only | Good | Known bounding box |
+| Point + Box | Best | Precise segmentation |
+| Points with labels | Best | Include/exclude regions |
+
+## Integration Notes
+
+This PoC is designed for integration into [Baseweight Canvas](https://github.com/baseweight/canvas).
+
+### API Surface for UI Integration
+
+The core segmentation can be called programmatically:
+
+```rust
+use sam3_rust::{Sam3, Sam3ImageProcessor};
+
+// Load models once
+let mut model = Sam3::new(&vision_model_path, &decoder_model_path)?;
+
+// For each segmentation request:
+let image = image::open(&image_path)?;
+let points = vec![(500.0, 300.0)];  // From UI click
+let labels = vec![1i64];             // Foreground
+let bbox = None;                     // Optional box from UI drag
+
+let result = model.segment(image, &points, &labels, bbox)?;
+
+// result.masks: [batch, num_prompts, 3, H, W] - three mask options
+// result.iou_scores: [batch, num_prompts, 3] - confidence per mask
+// result.object_scores: [batch, num_prompts, 1] - object presence
+```
+
+### UI Interaction Patterns
+
+| User Action | Prompt Type | Implementation |
+|-------------|-------------|----------------|
+| Click | Point (foreground) | `--point x,y` |
+| Shift+Click | Point (background) | Add `--bg-point x,y` (TODO) |
+| Drag rectangle | Box | `--box x1,y1,x2,y2` |
+| Click + Drag | Point + Box | Combined prompts |
+
+### Recommended UI Flow
+
+1. User loads image
+2. Run vision encoder **once** (cache embeddings)
+3. User clicks/drags to add prompts
+4. Run prompt encoder + mask decoder (fast, ~50ms)
+5. Display all 3 masks with IoU scores
+6. User selects preferred mask or refines prompts
+
+### VLM Integration
+
+SAM3 can be paired with Vision-Language Models for text-prompted segmentation:
+
+1. **VLM** (e.g., SmolVLM) identifies object locations from text: "Find the red car"
+2. VLM outputs bounding box or point coordinates
+3. **SAM3** segments the identified region precisely
+
+This enables natural language segmentation: "Segment the person on the left"
+
+### Performance Considerations
+
+| Stage | Time (CPU) | Cacheable |
+|-------|------------|-----------|
+| Vision Encoder | ~10-15s | Yes (per image) |
+| Prompt Encoder + Mask Decoder | ~50-100ms | No (per prompt) |
+
+**Optimization**: Cache vision encoder output when user is iteratively refining prompts on the same image.
+
+## Future Work
+
+- [ ] Background point support (`--bg-point`)
+- [ ] Auto-select best mask (`--best-mask`)
+- [ ] Batch processing multiple images
+- [ ] Video tracking mode
+- [ ] Library API for programmatic use
+- [ ] GPU acceleration on Linux (CUDA)
+
 ## License
 
 Apache 2.0
