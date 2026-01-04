@@ -1,6 +1,6 @@
 # SAM3 Rust
 
-A Rust implementation for [Segment Anything 3 (SAM3)](https://github.com/anthropics/sam3) inference using ONNX Runtime.
+A Rust implementation for [Segment Anything 3 (SAM3)](https://github.com/facebookresearch/sam3) inference using ONNX Runtime.
 
 ## Features
 
